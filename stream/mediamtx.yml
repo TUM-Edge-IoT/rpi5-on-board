@@ -1,0 +1,10 @@
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigins: ['*']
+
+
+webrtcAdditionalHosts: ['10.145.57.165']
+
+paths:
+  all_others:
+    source: publisher
