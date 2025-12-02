@@ -9,7 +9,7 @@ import socket
 from datetime import datetime
 
 # --- CONFIG ---
-BROKER_IP = os.getenv("MQTT_BROKER", "10.145.57.230")
+BROKER_IP = os.getenv("MQTT_BROKER", "10.213.231.230")
 BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
 UART_DEVICE = os.getenv("UART_DEVICE", "/dev/serial0")
 UART_BAUD = int(os.getenv("UART_BAUD", "115200"))
@@ -96,8 +96,8 @@ client.will_set(will_topic, will_payload, qos=1, retain=True)
 
 def on_connect(client, userdata, flags, rc):
     print(f"[MQTT] Connected rc={rc}")
-    
-    # Subscribe to commands
+
+    # --- SUBSCRIBING TO COMMANDS ---
     cmd_topic = f"robots/{ROBOT_ID}/command"
     client.subscribe(cmd_topic)
     print(f"[MQTT] Listening for commands on: {cmd_topic}")
@@ -113,14 +113,23 @@ def on_connect(client, userdata, flags, rc):
     client.publish(f"robots/{ROBOT_ID}/status", json.dumps(status_payload), qos=1, retain=True)
     print(f"[SYSTEM] Announced ONLINE: {my_ip}")
 
+# --- UPDATED ON_MESSAGE FUNCTION ---
 def on_message(client, userdata, msg):
     try:
+        # 1. Decode the incoming JSON string from MQTT
         payload = msg.payload.decode("utf-8")
         print(f"[CMD RX] {payload}")
+        
+        # 2. Validate it is real JSON 
         data = json.loads(payload)
+        
         if "command" in data:
-            cmd = data["command"] + "\n"
-            ser.write(cmd.encode())
+            # 3. FORWARD THE FULL JSON TO SERIAL
+            # We append "\n" so the ESP32 knows the line ended
+            cmd_packet = payload + "\n"
+            ser.write(cmd_packet.encode())
+            print(f"[UART TX] Sent JSON: {payload}")
+            
     except Exception as e:
         print(f"Cmd Error: {e}")
 
@@ -136,7 +145,6 @@ except Exception as e:
 # --- 4. MAIN TELEMETRY LOOP ---
 print("System Online. Forwarding Data...")
 
-# !!! THIS TRY BLOCK WAS MISSING IN YOUR CODE !!!
 try:
     while True:
         try:
