@@ -14,6 +14,7 @@ BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
 UART_DEVICE = os.getenv("UART_DEVICE", "/dev/serial0")
 UART_BAUD = int(os.getenv("UART_BAUD", "115200"))
 MQTT_QOS = 1
+ROBOT_ID = os.getenv("ROBOT_ID", "rover-esp32-001") 
 
 # --- HELPER: GET LOCAL IP ---
 def get_local_ip():
@@ -64,27 +65,29 @@ except Exception as e:
     print(f"[FATAL] Failed to open serial: {e}")
     sys.exit(1)
 
-# --- 2. DISCOVERY PHASE (Wait for ESP32 ID) ---
-ROBOT_ID = None
-print("[INIT] Waiting for data from ESP32 to identify myself...")
-
-while ROBOT_ID is None:
-    try:
-        line = ser.readline()
-        if not line: continue
-        text = line.decode("utf-8", errors="replace").strip()
+# --- 2. DISCOVERY PHASE (Logic Updated) ---
+# If ROBOT_ID was set in Config, we skip waiting for the ESP32
+if ROBOT_ID:
+    print(f"✅ IDENTIFIED from Config/Env! I am: {ROBOT_ID}")
+else:
+    print("[INIT] No ROBOT_ID in config. Waiting for data from ESP32...")
+    while ROBOT_ID is None:
         try:
-            data = json.loads(text)
-            if "device" in data: ROBOT_ID = data["device"]
-            elif "id" in data: ROBOT_ID = data["id"]
+            line = ser.readline()
+            if not line: continue
+            text = line.decode("utf-8", errors="replace").strip()
+            try:
+                data = json.loads(text)
+                if "device" in data: ROBOT_ID = data["device"]
+                elif "id" in data: ROBOT_ID = data["id"]
 
-            if ROBOT_ID:
-                print(f"✅ IDENTIFIED! I am: {ROBOT_ID}")
-        except:
-            pass
-    except Exception as e:
-        print("Waiting...", e)
-        time.sleep(1)
+                if ROBOT_ID:
+                    print(f"✅ IDENTIFIED via Serial! I am: {ROBOT_ID}")
+            except:
+                pass
+        except Exception as e:
+            print("Waiting...", e)
+            time.sleep(1)
 
 # --- 3. MQTT SETUP ---
 client = mqtt.Client()
@@ -97,7 +100,7 @@ client.will_set(will_topic, will_payload, qos=1, retain=True)
 def on_connect(client, userdata, flags, rc):
     print(f"[MQTT] Connected rc={rc}")
 
-    # --- SUBSCRIBING TO COMMANDS ---
+    # Subscribe to commands
     cmd_topic = f"robots/{ROBOT_ID}/command"
     client.subscribe(cmd_topic)
     print(f"[MQTT] Listening for commands on: {cmd_topic}")
@@ -113,19 +116,18 @@ def on_connect(client, userdata, flags, rc):
     client.publish(f"robots/{ROBOT_ID}/status", json.dumps(status_payload), qos=1, retain=True)
     print(f"[SYSTEM] Announced ONLINE: {my_ip}")
 
-# --- UPDATED ON_MESSAGE FUNCTION ---
+# --- UPDATED ON_MESSAGE FUNCTION (JSON Forwarding) ---
 def on_message(client, userdata, msg):
     try:
-        # 1. Decode the incoming JSON string from MQTT
+        # 1. Decode payload
         payload = msg.payload.decode("utf-8")
         print(f"[CMD RX] {payload}")
         
-        # 2. Validate it is real JSON 
+        # 2. Check validity
         data = json.loads(payload)
         
         if "command" in data:
-            # 3. FORWARD THE FULL JSON TO SERIAL
-            # We append "\n" so the ESP32 knows the line ended
+            # 3. Send the EXACT JSON string + newline to UART
             cmd_packet = payload + "\n"
             ser.write(cmd_packet.encode())
             print(f"[UART TX] Sent JSON: {payload}")
