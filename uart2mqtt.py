@@ -7,6 +7,9 @@ import os
 import sys
 import socket
 from datetime import datetime
+import base64
+import zlib
+import numpy as np
 
 # --- CONFIG ---
 BROKER_IP = os.getenv("MQTT_BROKER", "10.213.231.230")
@@ -27,6 +30,17 @@ def get_local_ip():
     finally:
         s.close()
     return ip
+
+# --- SLAM ENGINE INITIALIZATION ---
+try:
+    from slam.slam_engine import SlamEngine
+    slam = SlamEngine()
+    slam_enabled = True
+    print("[INIT] SLAM engine initialized successfully")
+except Exception as e:
+    print(f"[WARN] SLAM engine failed to initialize: {e}")
+    slam = None
+    slam_enabled = False
 
 # --- HELPER: NORMALIZE DATA ---
 def normalize_payload_for_db(payload_obj):
@@ -162,15 +176,57 @@ try:
                 print(f"[WARN] Invalid JSON: {text}")
                 continue
 
-            # --- NORMALIZE DATA ---
-            publish_obj = normalize_payload_for_db(data)
+            # --- PACKET TYPE DETECTION ---
+            is_slam_packet = "ts" in data and "enc" in data and "imu" in data and "tof" in data
+            is_telemetry_packet = "device" in data or "bme_temp_c" in data or "bme_press_hpa" in data
 
-            # Publish
-            topic = f"robots/{ROBOT_ID}/telemetry"
-            payload_str = json.dumps(publish_obj)
+            if is_slam_packet:
+                # ===== SLAM PACKET PROCESSING =====
+                if not slam_enabled:
+                    print("[WARN] SLAM packet received but SLAM engine not enabled")
+                    continue
 
-            client.publish(topic, payload_str, qos=1)
-            print(f"[PUB] {topic} -> {payload_str}")
+                try:
+                    slam_out = slam.process(data)
+
+                    if slam_out:
+                        # Publish pose
+                        pose_topic = f"robots/{ROBOT_ID}/slam/pose"
+                        pose_payload = json.dumps(slam_out["pose"])
+                        client.publish(pose_topic, pose_payload, qos=1)
+                        print(f"[SLAM] {pose_topic} -> {pose_payload}")
+
+                        # Publish map (compressed)
+                        compressed = zlib.compress(slam_out["map"].tobytes())
+                        encoded = base64.b64encode(compressed).decode()
+
+                        map_topic = f"robots/{ROBOT_ID}/slam/map"
+                        map_payload = json.dumps({
+                            "resolution": 0.05,
+                            "size": slam_out["map"].shape,
+                            "data": encoded
+                        })
+                        client.publish(map_topic, map_payload, qos=1)
+                        print(f"[SLAM] {map_topic} -> Map published (size: {len(encoded)} bytes)")
+
+                except Exception as e:
+                    print(f"[SLAM ERROR] {e}")
+
+            elif is_telemetry_packet:
+                # ===== TELEMETRY PACKET PROCESSING =====
+                # Normalize data for database
+                publish_obj = normalize_payload_for_db(data)
+
+                # Publish to telemetry topic
+                topic = f"robots/{ROBOT_ID}/telemetry"
+                payload_str = json.dumps(publish_obj)
+
+                client.publish(topic, payload_str, qos=1)
+                print(f"[TELEM] {topic} -> {payload_str}")
+            
+            else:
+                # Unknown packet format
+                print(f"[WARN] Unknown packet format: {json.dumps(data)}")
 
         except Exception as e:
             print("Loop Error:", e)
