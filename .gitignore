@@ -3,4 +3,4 @@
 # But keep .gitignore itself
 !.gitignore
 !.gitconfig
-!.env
+!.env.example

@@ -197,7 +197,16 @@ try:
                         print(f"[SLAM] {pose_topic} -> {pose_payload}")
 
                         # Publish map (compressed)
-                        compressed = zlib.compress(slam_out["map"].tobytes())
+                        # Convert grid values to display format:
+                        #   Grid: negative=free, 0=unknown, positive=occupied
+                        #   Display: 0=unknown, 1=free, 100=wall
+                        raw_map = slam_out["map"]
+                        display_map = np.zeros_like(raw_map, dtype=np.uint8)
+                        display_map[raw_map < 0] = 1      # Free space
+                        display_map[raw_map == 0] = 0     # Unknown
+                        display_map[raw_map > 0] = 100    # Wall/obstacle
+                        
+                        compressed = zlib.compress(display_map.tobytes())
                         encoded = base64.b64encode(compressed).decode()
 
                         map_topic = f"robots/{ROBOT_ID}/slam/map"
