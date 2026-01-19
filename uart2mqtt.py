@@ -17,7 +17,11 @@ BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
 UART_DEVICE = os.getenv("UART_DEVICE", "/dev/serial0")
 UART_BAUD = int(os.getenv("UART_BAUD", "115200"))
 MQTT_QOS = 1
-ROBOT_ID = os.getenv("ROBOT_ID", "rover-esp32-001") 
+ROBOT_ID = os.getenv("ROBOT_ID", "rover-esp32-001")
+
+# SLAM publish rate limiting (process at full speed, publish slower)
+SLAM_PUBLISH_INTERVAL = float(os.getenv("SLAM_PUBLISH_INTERVAL", "1.0"))  # seconds
+last_slam_publish_time = 0 
 
 # --- HELPER: GET LOCAL IP ---
 def get_local_ip():
@@ -190,6 +194,16 @@ try:
                     slam_out = slam.process(data)
 
                     if slam_out:
+                        # Rate limit SLAM publishing (process at full speed, publish slower)
+                        current_time = time.time()
+                        
+                        if current_time - last_slam_publish_time < SLAM_PUBLISH_INTERVAL:
+                            # Skip publishing, but SLAM is still processing
+                            continue
+                        
+                        # Update last publish time (using list to avoid global)
+                        globals()['last_slam_publish_time'] = current_time
+                        
                         # Publish pose
                         pose_topic = f"robots/{ROBOT_ID}/slam/pose"
                         pose_payload = json.dumps(slam_out["pose"])
