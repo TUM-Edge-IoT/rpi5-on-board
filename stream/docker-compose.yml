@@ -17,18 +17,9 @@ services:
     volumes:
       - /dev/video0:/dev/video0
     command: >
-      -f v4l2
-      -input_format mjpeg
-      -video_size 640x480
-      -framerate 30
-      -i /dev/video0
-      -c:v libx264
-      -pix_fmt yuv420p
-      -preset ultrafast
-      -tune zerolatency
-      -b:v 1M
-      -f rtsp
-      rtsp://127.0.0.1:8554/alpha
+      -f v4l2 -input_format mjpeg -video_size 640x480 -framerate 30
+      -i /dev/video0 -c:v libx264 -pix_fmt yuv420p -preset ultrafast
+      -tune zerolatency -b:v 1M -f rtsp rtsp://127.0.0.1:8554/cam
     restart: unless-stopped
     depends_on:
       - mediamtx
