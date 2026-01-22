@@ -14,7 +14,7 @@ services:
     network_mode: host
     device_cgroup_rules:
       - 'c 81:* rmw'
-    volumes:
+    devices:
       - /dev/video0:/dev/video0
     command: >
       -f v4l2 -input_format mjpeg -video_size 640x480 -framerate 30

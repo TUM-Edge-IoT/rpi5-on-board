@@ -9,7 +9,9 @@ import socket
 from datetime import datetime
 
 # --- CONFIG ---
-BROKER_IP = os.getenv("MQTT_BROKER", "10.213.231.230")
+#BROKER_IP = os.getenv("MQTT_BROKER", "10.243.244.230")
+#BROKER_IP = os.getenv("MQTT_BROKER", "172.20.10.4") #PLEASE DO NOT DELETE
+BROKER_IP = os.getenv("MQTT_BROKER", "10.36.209.139")
 BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
 UART_DEVICE = os.getenv("UART_DEVICE", "/dev/serial0")
 UART_BAUD = int(os.getenv("UART_BAUD", "115200"))
