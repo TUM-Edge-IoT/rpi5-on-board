@@ -9,7 +9,9 @@ import socket
 from datetime import datetime
 
 # --- CONFIG ---
+# This should be the IP for the backend/cloudapp
 BROKER_IP = os.getenv("MQTT_BROKER", "10.213.231.230")
+
 BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
 UART_DEVICE = os.getenv("UART_DEVICE", "/dev/serial0")
 UART_BAUD = int(os.getenv("UART_BAUD", "115200"))
