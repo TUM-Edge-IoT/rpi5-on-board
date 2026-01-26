@@ -14,7 +14,8 @@ import numpy as np
 # =============================================================================
 # CONFIG
 # =============================================================================
-BROKER_IP   = os.getenv("MQTT_BROKER", "10.110.117.139")
+# Use the laptop IP from your earlier finding, or override in docker-compose
+BROKER_IP   = os.getenv("MQTT_BROKER", "10.110.117.139") 
 BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
 UART_DEVICE = os.getenv("UART_DEVICE", "/dev/ttyAMA0")
@@ -70,10 +71,12 @@ except Exception as e:
     print(f"[WARN] SLAM engine disabled: {e}")
 
 # =============================================================================
-# MQTT SETUP (MUST HAPPEN FIRST)
+# MQTT SETUP
 # =============================================================================
-client_id = f"{ROBOT_ID}-slam-bridge"
-client = mqtt.Client(client_id=client_id, clean_session=True)
+client_id = f"{ROBOT_ID}"
+
+#Use VERSION2 to stop the DeprecationWarning
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id, clean_session=True)
 
 will_payload = json.dumps({
     "status": "offline",
@@ -88,13 +91,19 @@ client.will_set(
     retain=True
 )
 
-
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, reason_code, properties=None):
+    # Standardizing callback for V2
+    rc = reason_code.value if hasattr(reason_code, 'value') else reason_code
     print(f"[MQTT] Connected rc={rc}")
+    
+    if rc != 0:
+        print(f"[FATAL] Connection rejected with code {rc}")
+        return
 
     cmd_topic = f"robots/{ROBOT_ID}/command"
     client.subscribe(cmd_topic)
 
+    # This sends the ONLINE status immediately, even if UART is broken
     status_payload = {
         "status": "online",
         "ip_address": get_local_ip(),
@@ -133,6 +142,7 @@ client.on_message = on_message
 
 
 try:
+    print(f"[MQTT] Connecting to {BROKER_IP}:{BROKER_PORT}...")
     client.connect(BROKER_IP, BROKER_PORT, 60)
     client.loop_start()
 except Exception as e:
@@ -140,7 +150,7 @@ except Exception as e:
     sys.exit(1)
 
 # =============================================================================
-# SERIAL (RETRY-BASED, NO EXIT)
+# SERIAL (RETRY-BASED)
 # =============================================================================
 ser = None
 
@@ -151,7 +161,8 @@ def try_open_serial():
         print(f"[UART] Opened {UART_DEVICE}")
     except Exception as e:
         ser = None
-        print(f"[UART] Unavailable: {e}")
+        # Don't print every loop, just once or heavily throttled in real life
+        print(f"[UART] Unavailable: {e}") 
 
 
 # =============================================================================
@@ -159,7 +170,6 @@ def try_open_serial():
 # =============================================================================
 def normalize_payload_for_db(payload):
     out = {}
-
     if "temperature" in payload: out["temperature"] = payload["temperature"]
     elif "temp_c" in payload: out["temperature"] = payload["temp_c"]
 
@@ -180,7 +190,6 @@ print("[SYSTEM] SLAM Bridge running")
 
 try:
     while True:
-
         if ser is None:
             try_open_serial()
             time.sleep(2)
@@ -198,10 +207,12 @@ try:
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
-                print(f"[WARN] Invalid JSON: {text}")
+                # print(f"[WARN] Invalid JSON: {text}") # Optional: Uncomment to debug noise
                 continue
 
-            is_slam = all(k in data for k in ("ts", "enc", "imu", "tof"))
+            #Relaxed logic to accept your ESP32 data
+            # We check for IMU (required for SLAM) or just valid JSON for telemetry
+            is_slam = "imu" in data
             is_telem = "device" in data or "temperature" in data
 
             if is_slam and slam_enabled:
@@ -214,12 +225,14 @@ try:
                     continue
                 last_slam_publish_time = now
 
+                # 1. Publish Pose
                 client.publish(
                     f"robots/{ROBOT_ID}/slam/pose",
                     json.dumps(slam_out["pose"]),
                     qos=1
                 )
 
+                # 2. Publish Map
                 raw_map = slam_out["map"]
                 display = np.zeros_like(raw_map, dtype=np.uint8)
                 display[raw_map < 0] = 1
@@ -238,6 +251,7 @@ try:
                     }),
                     qos=1
                 )
+                print(f"[SLAM] Map updated")
 
             elif is_telem:
                 payload = normalize_payload_for_db(data)
@@ -246,9 +260,7 @@ try:
                     json.dumps(payload),
                     qos=1
                 )
-
-            else:
-                print(f"[WARN] Unknown packet: {data}")
+                print(f"[TELEM] Sent data")
 
         except serial.SerialException:
             print("[UART] Lost connection")
