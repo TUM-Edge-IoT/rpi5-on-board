@@ -59,7 +59,7 @@ services:
       dockerfile: Dockerfile
     container_name: rpi5-slam-bridge
     network_mode: host
-    priviledged: true
+    privileged: true
     devices:
       - /dev/ttyAMA0:/dev/ttyAMA0
     environment:
