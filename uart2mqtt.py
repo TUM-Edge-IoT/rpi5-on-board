@@ -6,60 +6,22 @@ import paho.mqtt.client as mqtt
 import os
 import sys
 import socket
-from datetime import datetime, timezone
+from datetime import datetime
 import base64
 import zlib
 import numpy as np
 
 # =============================================================================
-# AUTO-DISCOVERY FUNCTION
-# =============================================================================
-def find_mqtt_broker():
-    DISCOVERY_PORT = 1884
-    print(f"[DISCOVERY] Searching for MQTT Broker on UDP {DISCOVERY_PORT}...")
-    
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.settimeout(5) 
-    
-   
-    for i in range(3):
-        try:
-            message = b'WHO_IS_BROKER'
-            
-            sock.sendto(message, ('<broadcast>', DISCOVERY_PORT))
-            
-            
-            data, addr = sock.recvfrom(1024)
-            if data.strip() == b'I_AM_BROKER':
-                print(f"[DISCOVERY] Found Broker at {addr[0]}!")
-                sock.close()
-                return addr[0] 
-        except socket.timeout:
-            print("[DISCOVERY] No reply, retrying...")
-        except Exception as e:
-            print(f"[DISCOVERY] Error: {e}")
-            
-    print("[FATAL] Could not find MQTT Broker on network.")
-    sock.close()
-    return None
-
-# =============================================================================
 # CONFIG
 # =============================================================================
-
-found_ip = find_mqtt_broker()
-
-
-BROKER_IP = found_ip if found_ip else os.getenv("MQTT_BROKER", "127.0.0.1")
+# Use the laptop IP from your earlier finding, or override in docker-compose
+BROKER_IP   = os.getenv("MQTT_BROKER", "10.110.117.139") 
 BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
-
-print(f"[SYSTEM] TARGET BROKER IP: {BROKER_IP}")
 
 UART_DEVICE = os.getenv("UART_DEVICE", "/dev/ttyAMA0")
 UART_BAUD   = int(os.getenv("UART_BAUD", "115200"))
 
-ROBOT_ID = os.getenv("ROBOT_ID", "rover-esp32-001") 
+ROBOT_ID = os.getenv("ROBOT_ID", "rover-esp32-001")
 MQTT_QOS = 1
 
 SLAM_PUBLISH_INTERVAL = float(os.getenv("SLAM_PUBLISH_INTERVAL", "1.0"))
@@ -84,7 +46,7 @@ def publish_offline(reason=None):
     payload = {
         "status": "offline",
         "reason": reason,
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "timestamp": datetime.utcnow().isoformat() + "Z"
     }
     try:
         client.publish(f"robots/{ROBOT_ID}/status",
@@ -113,12 +75,13 @@ except Exception as e:
 # =============================================================================
 client_id = f"{ROBOT_ID}"
 
+#Use VERSION2 to stop the DeprecationWarning
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id, clean_session=True)
 
 will_payload = json.dumps({
     "status": "offline",
     "ip_address": None,
-    "timestamp": datetime.now(timezone.utc).isoformat()
+    "timestamp": datetime.utcnow().isoformat() + "Z"
 })
 
 client.will_set(
@@ -129,9 +92,10 @@ client.will_set(
 )
 
 def on_connect(client, userdata, flags, reason_code, properties=None):
+    # Standardizing callback for V2
     rc = reason_code.value if hasattr(reason_code, 'value') else reason_code
     print(f"[MQTT] Connected rc={rc}")
-
+    
     if rc != 0:
         print(f"[FATAL] Connection rejected with code {rc}")
         return
@@ -139,11 +103,12 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
     cmd_topic = f"robots/{ROBOT_ID}/command"
     client.subscribe(cmd_topic)
 
+    # This sends the ONLINE status immediately, even if UART is broken
     status_payload = {
         "status": "online",
         "ip_address": get_local_ip(),
         "video_path": "cam",
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "timestamp": datetime.utcnow().isoformat() + "Z"
     }
 
     client.publish(
@@ -196,8 +161,8 @@ def try_open_serial():
         print(f"[UART] Opened {UART_DEVICE}")
     except Exception as e:
         ser = None
-        # Don't print every loop
-        # print(f"[UART] Unavailable: {e}") 
+        # Don't print every loop, just once or heavily throttled in real life
+        print(f"[UART] Unavailable: {e}") 
 
 
 # =============================================================================
@@ -214,7 +179,7 @@ def normalize_payload_for_db(payload):
     if "co2" in payload: out["co2"] = payload["co2"]
 
     out["_raw"] = payload
-    out["_received_at"] = datetime.now(timezone.utc).isoformat()
+    out["_received_at"] = datetime.utcnow().isoformat() + "Z"
     return out
 
 
@@ -242,9 +207,11 @@ try:
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
+                # print(f"[WARN] Invalid JSON: {text}") # Optional: Uncomment to debug noise
                 continue
 
             # Relaxed logic to accept your ESP32 data
+            # We check for IMU (required for SLAM) or just valid JSON for telemetry
             is_slam = "imu" in data
             is_telem = "device" in data or "temperature" in data
 
