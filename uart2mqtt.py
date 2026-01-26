@@ -7,18 +7,28 @@ import os
 import sys
 import socket
 from datetime import datetime
+import base64
+import zlib
+import numpy as np
 
-# --- CONFIG ---
-#BROKER_IP = os.getenv("MQTT_BROKER", "10.243.244.230")
-#BROKER_IP = os.getenv("MQTT_BROKER", "172.20.10.4") #PLEASE DO NOT DELETE
-BROKER_IP = os.getenv("MQTT_BROKER", "10.36.209.139")
+# =============================================================================
+# CONFIG
+# =============================================================================
+BROKER_IP   = os.getenv("MQTT_BROKER", "10.110.117.139")
 BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
-UART_DEVICE = os.getenv("UART_DEVICE", "/dev/serial0")
-UART_BAUD = int(os.getenv("UART_BAUD", "115200"))
-MQTT_QOS = 1
-ROBOT_ID = os.getenv("ROBOT_ID", "rover-esp32-001") 
 
-# --- HELPER: GET LOCAL IP ---
+UART_DEVICE = os.getenv("UART_DEVICE", "/dev/ttyAMA0")
+UART_BAUD   = int(os.getenv("UART_BAUD", "115200"))
+
+ROBOT_ID = os.getenv("ROBOT_ID", "rover-esp32-001")
+MQTT_QOS = 1
+
+SLAM_PUBLISH_INTERVAL = float(os.getenv("SLAM_PUBLISH_INTERVAL", "1.0"))
+last_slam_publish_time = 0.0
+
+# =============================================================================
+# HELPERS
+# =============================================================================
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -30,168 +40,223 @@ def get_local_ip():
         s.close()
     return ip
 
-# --- HELPER: NORMALIZE DATA ---
-def normalize_payload_for_db(payload_obj):
-    normalized = {}
 
-    # 1. Temperature
-    if "temperature" in payload_obj: normalized["temperature"] = payload_obj["temperature"]
-    elif "temp_c" in payload_obj: normalized["temperature"] = payload_obj["temp_c"]
-    elif "t" in payload_obj: normalized["temperature"] = payload_obj["t"]
+def publish_offline(reason=None):
+    payload = {
+        "status": "offline",
+        "reason": reason,
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }
+    try:
+        client.publish(f"robots/{ROBOT_ID}/status",
+                       json.dumps(payload),
+                       qos=1,
+                       retain=True)
+    except Exception:
+        pass
 
-    # 2. Distance
-    if "distance" in payload_obj: normalized["distance"] = payload_obj["distance"]
-    elif "distance_cm" in payload_obj: normalized["distance"] = payload_obj["distance_cm"]
 
-    # 3. CO2
-    if "co2" in payload_obj: normalized["co2"] = payload_obj["co2"]
-    elif "co2_ppm" in payload_obj: normalized["co2"] = payload_obj["co2_ppm"]
-
-    # 4. MQ2
-    if "mq2_lpg" in payload_obj: normalized["mq2_lpg"] = payload_obj["mq2_lpg"]
-    elif "mq2_lpg_ppm" in payload_obj: normalized["mq2_lpg"] = payload_obj["mq2_lpg_ppm"]
-
-    if "mq2_co" in payload_obj: normalized["mq2_co"] = payload_obj["mq2_co"]
-    elif "mq2_co_ppm" in payload_obj: normalized["mq2_co"] = payload_obj["mq2_co_ppm"]
-
-    # Add timestamp and raw data
-    normalized["_raw"] = payload_obj
-    normalized["_received_at"] = datetime.utcnow().isoformat() + "Z"
-    return normalized
-
-# --- 1. OPEN SERIAL ---
+# =============================================================================
+# SLAM ENGINE
+# =============================================================================
 try:
-    ser = serial.Serial(port=UART_DEVICE, baudrate=UART_BAUD, timeout=1)
-    print(f"[INIT] Serial opened on {UART_DEVICE}")
+    from slam.slam_engine import SlamEngine
+    slam = SlamEngine()
+    slam_enabled = True
+    print("[INIT] SLAM engine initialized successfully")
 except Exception as e:
-    print(f"[FATAL] Failed to open serial: {e}")
-    sys.exit(1)
+    slam = None
+    slam_enabled = False
+    print(f"[WARN] SLAM engine disabled: {e}")
 
-# --- 2. DISCOVERY PHASE (Logic Updated) ---
-# If ROBOT_ID was set in Config, we skip waiting for the ESP32
-if ROBOT_ID:
-    print(f"✅ IDENTIFIED from Config/Env! I am: {ROBOT_ID}")
-else:
-    print("[INIT] No ROBOT_ID in config. Waiting for data from ESP32...")
-    while ROBOT_ID is None:
-        try:
-            line = ser.readline()
-            if not line: continue
-            text = line.decode("utf-8", errors="replace").strip()
-            try:
-                data = json.loads(text)
-                if "device" in data: ROBOT_ID = data["device"]
-                elif "id" in data: ROBOT_ID = data["id"]
+# =============================================================================
+# MQTT SETUP (MUST HAPPEN FIRST)
+# =============================================================================
+client_id = f"{ROBOT_ID}-slam-bridge"
+client = mqtt.Client(client_id=client_id, clean_session=True)
 
-                if ROBOT_ID:
-                    print(f"✅ IDENTIFIED via Serial! I am: {ROBOT_ID}")
-            except:
-                pass
-        except Exception as e:
-            print("Waiting...", e)
-            time.sleep(1)
+will_payload = json.dumps({
+    "status": "offline",
+    "ip_address": None,
+    "timestamp": datetime.utcnow().isoformat() + "Z"
+})
 
-# --- 3. MQTT SETUP ---
-client = mqtt.Client()
+client.will_set(
+    f"robots/{ROBOT_ID}/status",
+    will_payload,
+    qos=1,
+    retain=True
+)
 
-# --- LAST WILL AND TESTAMENT ---
-will_topic = f"robots/{ROBOT_ID}/status"
-will_payload = json.dumps({"status": "offline", "ip_address": None})
-client.will_set(will_topic, will_payload, qos=1, retain=True)
 
 def on_connect(client, userdata, flags, rc):
     print(f"[MQTT] Connected rc={rc}")
 
-    # Subscribe to commands
     cmd_topic = f"robots/{ROBOT_ID}/command"
     client.subscribe(cmd_topic)
-    print(f"[MQTT] Listening for commands on: {cmd_topic}")
 
-    # --- ANNOUNCE ONLINE STATUS ---
-    my_ip = get_local_ip()
     status_payload = {
         "status": "online",
-        "ip_address": my_ip,
+        "ip_address": get_local_ip(),
         "video_path": "cam",
         "timestamp": datetime.utcnow().isoformat() + "Z"
     }
-    client.publish(f"robots/{ROBOT_ID}/status", json.dumps(status_payload), qos=1, retain=True)
-    print(f"[SYSTEM] Announced ONLINE: {my_ip}")
 
-# --- UPDATED ON_MESSAGE FUNCTION (JSON Forwarding) ---
+    client.publish(
+        f"robots/{ROBOT_ID}/status",
+        json.dumps(status_payload),
+        qos=1,
+        retain=True
+    )
+
+    print(f"[SYSTEM] ONLINE announced as {ROBOT_ID}")
+
+
 def on_message(client, userdata, msg):
+    global ser
+    if ser is None:
+        print("[UART] Not ready, dropping command")
+        return
+
     try:
-        # 1. Decode payload
         payload = msg.payload.decode("utf-8")
-        print(f"[CMD RX] {payload}")
-        
-        # 2. Check validity
         data = json.loads(payload)
-        
         if "command" in data:
-            # 3. Send the EXACT JSON string + newline to UART
-            cmd_packet = payload + "\n"
-            ser.write(cmd_packet.encode())
-            print(f"[UART TX] Sent JSON: {payload}")
-            
+            ser.write((payload + "\n").encode())
+            print(f"[UART TX] {payload}")
     except Exception as e:
-        print(f"Cmd Error: {e}")
+        print(f"[CMD ERROR] {e}")
+
 
 client.on_connect = on_connect
 client.on_message = on_message
+
 
 try:
     client.connect(BROKER_IP, BROKER_PORT, 60)
     client.loop_start()
 except Exception as e:
-    print(f"[FATAL] MQTT Connection failed: {e}")
+    print(f"[FATAL] MQTT connection failed: {e}")
+    sys.exit(1)
 
-# --- 4. MAIN TELEMETRY LOOP ---
-print("System Online. Forwarding Data...")
+# =============================================================================
+# SERIAL (RETRY-BASED, NO EXIT)
+# =============================================================================
+ser = None
+
+def try_open_serial():
+    global ser
+    try:
+        ser = serial.Serial(UART_DEVICE, UART_BAUD, timeout=1)
+        print(f"[UART] Opened {UART_DEVICE}")
+    except Exception as e:
+        ser = None
+        print(f"[UART] Unavailable: {e}")
+
+
+# =============================================================================
+# NORMALIZATION
+# =============================================================================
+def normalize_payload_for_db(payload):
+    out = {}
+
+    if "temperature" in payload: out["temperature"] = payload["temperature"]
+    elif "temp_c" in payload: out["temperature"] = payload["temp_c"]
+
+    if "distance" in payload: out["distance"] = payload["distance"]
+    elif "distance_cm" in payload: out["distance"] = payload["distance_cm"]
+
+    if "co2" in payload: out["co2"] = payload["co2"]
+
+    out["_raw"] = payload
+    out["_received_at"] = datetime.utcnow().isoformat() + "Z"
+    return out
+
+
+# =============================================================================
+# MAIN LOOP
+# =============================================================================
+print("[SYSTEM] SLAM Bridge running")
 
 try:
     while True:
+
+        if ser is None:
+            try_open_serial()
+            time.sleep(2)
+            continue
+
         try:
             line = ser.readline()
-            if not line: continue
-            text = line.decode("utf-8", errors="replace").strip()
-            if not text: continue
+            if not line:
+                continue
 
-            # Parse JSON
+            text = line.decode("utf-8", errors="replace").strip()
+            if not text:
+                continue
+
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
                 print(f"[WARN] Invalid JSON: {text}")
                 continue
 
-            # --- NORMALIZE DATA ---
-            publish_obj = normalize_payload_for_db(data)
+            is_slam = all(k in data for k in ("ts", "enc", "imu", "tof"))
+            is_telem = "device" in data or "temperature" in data
 
-            # Publish
-            topic = f"robots/{ROBOT_ID}/telemetry"
-            payload_str = json.dumps(publish_obj)
+            if is_slam and slam_enabled:
+                slam_out = slam.process(data)
+                if not slam_out:
+                    continue
 
-            client.publish(topic, payload_str, qos=1)
-            print(f"[PUB] {topic} -> {payload_str}")
+                now = time.time()
+                if now - last_slam_publish_time < SLAM_PUBLISH_INTERVAL:
+                    continue
+                last_slam_publish_time = now
 
-        except Exception as e:
-            print("Loop Error:", e)
-            time.sleep(1)
+                client.publish(
+                    f"robots/{ROBOT_ID}/slam/pose",
+                    json.dumps(slam_out["pose"]),
+                    qos=1
+                )
+
+                raw_map = slam_out["map"]
+                display = np.zeros_like(raw_map, dtype=np.uint8)
+                display[raw_map < 0] = 1
+                display[raw_map > 0] = 100
+
+                encoded = base64.b64encode(
+                    zlib.compress(display.tobytes())
+                ).decode()
+
+                client.publish(
+                    f"robots/{ROBOT_ID}/slam/map",
+                    json.dumps({
+                        "resolution": 0.05,
+                        "size": raw_map.shape,
+                        "data": encoded
+                    }),
+                    qos=1
+                )
+
+            elif is_telem:
+                payload = normalize_payload_for_db(data)
+                client.publish(
+                    f"robots/{ROBOT_ID}/telemetry",
+                    json.dumps(payload),
+                    qos=1
+                )
+
+            else:
+                print(f"[WARN] Unknown packet: {data}")
+
+        except serial.SerialException:
+            print("[UART] Lost connection")
+            ser = None
+            time.sleep(2)
 
 except KeyboardInterrupt:
-    print("\n[SYSTEM] Stopping... Sending OFFLINE status.")
-
-    # 1. Manually publish OFFLINE status
-    offline_payload = json.dumps({
-        "status": "offline",
-        "ip_address": None
-    })
-    info = client.publish(f"robots/{ROBOT_ID}/status", offline_payload, qos=1, retain=True)
-
-    # 2. Wait for the message to leave the network card
-    info.wait_for_publish()
-
-    # 3. Disconnect cleanly
+    print("[SYSTEM] Shutdown requested")
+    publish_offline("manual shutdown")
     client.disconnect()
     client.loop_stop()
-    print("[SYSTEM] Goodbye.")

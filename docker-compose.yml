@@ -1,0 +1,71 @@
+version: '3.8'
+
+# =============================================================================
+# RPi5 On-Board Services
+# =============================================================================
+# This docker-compose runs all services needed on the Raspberry Pi 5:
+# - mediamtx: RTSP server for camera streaming
+# - streamer: FFmpeg to capture camera and push to RTSP
+# - slam-bridge: uart2mqtt.py with SLAM processing
+#
+# Usage:
+#   docker compose up -d
+#
+# Environment variables (set in .env file or export):
+#   MQTT_BROKER   - IP of the MQTT broker (default: localhost)
+#   MQTT_PORT     - MQTT port (default: 1883)
+#   ROBOT_ID      - Robot identifier (default: rover-esp32-001)
+#   UART_DEVICE   - Serial port (default: /dev/serial0)
+#   UART_BAUD     - Baud rate (default: 115200)
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # RTSP Media Server
+  # ---------------------------------------------------------------------------
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: rpi5-mediamtx
+    network_mode: host
+    volumes:
+      - ./stream/mediamtx.yml:/mediamtx.yml
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Camera Streamer (FFmpeg)
+  # ---------------------------------------------------------------------------
+  streamer:
+    image: linuxserver/ffmpeg:latest
+    container_name: rpi5-streamer
+    network_mode: host
+    device_cgroup_rules:
+      - 'c 81:* rmw'
+    devices:
+      - /dev/video0:/dev/video0
+    command: >
+      -f v4l2 -input_format mjpeg -video_size 640x480 -framerate 30
+      -i /dev/video0 -c:v libx264 -pix_fmt yuv420p -preset ultrafast
+      -tune zerolatency -b:v 1M -f rtsp rtsp://127.0.0.1:8554/cam
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+
+  # ---------------------------------------------------------------------------
+  # SLAM Bridge (UART to MQTT with SLAM processing)
+  # ---------------------------------------------------------------------------
+  slam-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rpi5-slam-bridge
+    network_mode: host
+    priviledged: true
+    devices:
+      - /dev/ttyAMA0:/dev/ttyAMA0
+    environment:
+      - UART_DEVICE=/dev/ttyAMA0
+    volumes:
+      - ./slam:/app/slam:ro
+      - ./uart2mqtt.py:/app/uart2mqtt.py:ro
+    restart: unless-stopped
+    command: python3 /app/uart2mqtt.py
