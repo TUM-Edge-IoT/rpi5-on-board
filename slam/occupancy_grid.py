@@ -46,14 +46,38 @@ class OccupancyGrid:
     def update_with_tof(self, x, y, theta, tof_readings):
         """
         Update occupancy grid with ToF readings.
-        Traces rays from robot to obstacle, marking FREE cells along the path
-        and OCCUPIED cell at the endpoint (if obstacle detected).
-        If no obstacle detected (reading is 0), marks ray to max range as FREE.
         """
         # Robot position in map coordinates
         rx, ry = self.world_to_map(x, y)
-        
-        for dist_mm, angle in zip(tof_readings, TOF_ANGLES):
+
+        # =================================================================
+        # FIX START: Handle Dictionary vs List input
+        # =================================================================
+        # The ESP32 sends a dict {"d1": 100, "d2": 200...}
+        # We must convert this to a sorted list of integers [100, 200...]
+        # to match the order of TOF_ANGLES.
+        if isinstance(tof_readings, dict):
+            # Sort keys (d1, d2, d3, d4) to ensure correct angle mapping
+            sorted_keys = sorted(tof_readings.keys())
+            readings_list = []
+            for k in sorted_keys:
+                try:
+                    readings_list.append(int(tof_readings[k]))
+                except (ValueError, TypeError):
+                    readings_list.append(0) # Default to 0 if garbage data
+        else:
+            # If it's already a list, ensure elements are ints
+            try:
+                readings_list = [int(r) for r in tof_readings]
+            except (ValueError, TypeError):
+                readings_list = [0] * len(TOF_ANGLES)
+        # =================================================================
+        # FIX END
+        # =================================================================
+
+        # Now we zip the CLEANED list, not the raw dictionary
+        for dist_mm, angle in zip(readings_list, TOF_ANGLES):
+            
             # Determine if we hit an obstacle or reached max range
             if dist_mm > 0:
                 # Obstacle detected at this distance
@@ -63,23 +87,23 @@ class OccupancyGrid:
                 # No obstacle - use max range (mark as free space)
                 dist = TOF_MAX_RANGE
                 hit_obstacle = False
-            
+
             # Endpoint in world coordinates
             wx = x + dist * math.cos(theta + angle)
             wy = y + dist * math.sin(theta + angle)
-            
+
             # Endpoint in map coordinates
             mx, my = self.world_to_map(wx, wy)
-            
+
             # Trace ray from robot to endpoint using Bresenham
             ray_cells = self.bresenham_line(rx, ry, mx, my)
-            
+
             # Mark all cells along the ray as FREE
             for cx, cy in ray_cells[:-1] if hit_obstacle else ray_cells:
                 if 0 <= cx < self.size and 0 <= cy < self.size:
                     # Decrement towards free (min at -100)
                     self.grid[cy, cx] = max(self.grid[cy, cx] - 1, -100)
-            
+
             # Mark the endpoint as OCCUPIED only if we hit an obstacle
             if hit_obstacle and 0 <= mx < self.size and 0 <= my < self.size:
                 # Increment towards occupied (max at 100)

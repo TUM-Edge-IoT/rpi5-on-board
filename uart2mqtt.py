@@ -15,7 +15,8 @@ import signal
 # =============================================================================
 # CONFIG
 # =============================================================================
-BROKER_IP   = os.getenv("MQTT_BROKER", "10.110.117.139") 
+#BROKER_IP   = os.getenv("MQTT_BROKER", "10.110.117.139") 
+BROKER_IP   = os.getenv("MQTT_BROKER", "172.20.10.3")
 BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
 UART_DEVICE = os.getenv("UART_DEVICE", "/dev/ttyAMA0")
@@ -211,6 +212,7 @@ while True:
             continue
 
         text = line.decode("utf-8", errors="replace").strip()
+        print(f"[RAW DATA]:{text}")
         if not text:
             continue
 
@@ -218,6 +220,16 @@ while True:
             data = json.loads(text)
         except json.JSONDecodeError:
             continue
+        if "timestamp_ms" in data:
+            data["ts"] = data["timestamp_ms"]
+        if "encoders" in data:
+            data["enc"] = {"l": data["encoders"].get("e1",0),"r":data["encoders"].get("e2",0)}
+        if "tof" in data and isinstance(data["tof"], dict):
+            for k, v in data["tof"].items():
+                try:
+                    data["tof"][k]=int(v)
+                except (ValueError, TypeError):
+                    data["tof"][k]=0
 
         is_slam = "imu" in data
         is_telem = "device" in data or "temperature" in data
