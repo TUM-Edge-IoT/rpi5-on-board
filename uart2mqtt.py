@@ -170,8 +170,6 @@ def normalize_payload_for_db(payload):
     if "distance" in payload: out["distance"] = payload["distance"]
     elif "distance_cm" in payload: out["distance"] = payload["distance_cm"]
 
-    if "co2" in payload: out["co2"] = payload["co2"]
-
     out["_raw"] = payload
     out["_received_at"] = datetime.now(timezone.utc).isoformat()
     return out
