@@ -270,7 +270,7 @@ while True:
             )
             print(f"[SLAM] Map updated")
 
-        elif is_telem:
+        if is_telem:
             payload = normalize_payload_for_db(data)
             client.publish(
                 f"robots/{ROBOT_ID}/telemetry",
