@@ -250,8 +250,31 @@ while True:
 
             raw_map = slam_out["map"]
             display = np.zeros_like(raw_map, dtype=np.uint8)
+
             display[raw_map < 0] = 1
             display[raw_map > 0] = 100
+
+            try:
+                pose_x =slam_out["pose"]["x"] 
+                pose_y =slam_out["pose"]["y"]
+
+                map_res = 0.05
+                origin_x = raw_map.shape[1] // 2
+                origin_y = raw_map.shape[0] // 2
+
+                mx = int (pose_x / map_res) + origin_x
+                my = int (pose_y / map_res) + origin_y
+
+                if(0 <= mx < raw_map.shape[1]) and (0 <= my < raw_map.shape[0]):
+                    y_start = max(0, my - 1)
+                    y_end   = min(raw_map.shape[0], my + 2)
+                    x_start = max(0, mx - 1)
+                    x_end   = min(raw_map.shape[1], mx + 2)
+                    
+                    display[y_start:y_end, x_start:x_end] = 200
+            except Exception as e:
+                print(f"[SLAM WARN] Could not draw robot on map: {e}")
+
 
             encoded = base64.b64encode(
                 zlib.compress(display.tobytes())
