@@ -28,7 +28,7 @@ MQTT_QOS = 1
 SLAM_PUBLISH_INTERVAL = float(os.getenv("SLAM_PUBLISH_INTERVAL", "1.0"))
 last_slam_publish_time = 0.0
 
-# --- NEW: Command Mapping for Hybrid Odometry ---
+# Command Mapping (Frontend -> Python Internal)
 CMD_MAP = {
     "forward": "F",
     "backward": "B",
@@ -127,7 +127,7 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
 
     print(f"[SYSTEM] ONLINE announced as {ROBOT_ID}")
 
-# --- UPDATED: JSON Parsing and Translation ---
+# --- FIXED: Send JSON to Robot, Keep "F" for SLAM ---
 def on_message(client, userdata, msg):
     global current_command
     global ser
@@ -138,7 +138,7 @@ def on_message(client, userdata, msg):
     try:
         payload = msg.payload.decode("utf-8")
         
-        # 1. Extract the raw command word (e.g., "forward")
+        # 1. Parse JSON to find the command word (e.g., "forward")
         try:
             data = json.loads(payload)
             if "command" in data:
@@ -148,15 +148,16 @@ def on_message(client, userdata, msg):
         except json.JSONDecodeError:
             raw_cmd = payload
 
-        # 2. Translate to Single Letter (e.g., "F")
+        # 2. Translate to Single Letter for PYTHON SLAM ONLY
         clean_cmd = raw_cmd.strip().lower()
-        short_cmd = CMD_MAP.get(clean_cmd, "S") # Default to S if unknown
+        short_cmd = CMD_MAP.get(clean_cmd, "S") 
+        current_command = short_cmd # Update global variable for Odometry
         
-        current_command = short_cmd
+        # 3. Send the ORIGINAL PAYLOAD to the ESP32 (Wheels)
+        # This ensures the firmware gets exactly what it expects (JSON)
+        ser.write((payload + "\n").encode())
         
-        # 3. Send the SHORT command to the robot
-        ser.write((short_cmd + "\n").encode())
-        print(f"[UART TX] {clean_cmd} -> {short_cmd}")
+        print(f"[UART TX] Sent: {payload} | Internal: {short_cmd}")
         
     except Exception as e:
         print(f"[CMD ERROR] {e}")
@@ -173,7 +174,7 @@ except Exception as e:
     sys.exit(1)
 
 # =============================================================================
-# SERIAL (RETRY-BASED)
+# SERIAL
 # =============================================================================
 ser = None
 
@@ -202,16 +203,13 @@ def normalize_payload_for_db(payload):
     return out
 
 # =============================================================================
-# GRACEFUL SHUTDOWN HANDLER
+# SHUTDOWN
 # =============================================================================
 def graceful_shutdown(signum, frame):
     print(f"\n[SYSTEM] Caught signal {signum}. Shutting down gracefully...")
-    
     info = publish_offline("docker stop")
-    
     if info:
         info.wait_for_publish(timeout=2)
-        
     client.disconnect()
     client.loop_stop()
     print("[SYSTEM] Goodbye.")
@@ -261,8 +259,6 @@ while True:
         is_telem = "device" in data or "temperature" in data
 
         if is_slam and slam_enabled:
-            # --- START HYBRID SLAM LOGIC (No slam.process) ---
-            
             # 1. Manual Time Calculation
             ts = data["ts"] / 1000.0
             if slam.last_ts is None:
@@ -275,19 +271,17 @@ while True:
             # 2. Get Rotation from IMU
             gz = data["imu"].get("gz", 0.0)
 
-            # 3. Update Odometry with Command + IMU
-            # Assumes odometry.update(gyro, dt, command)
+            # 3. Update Odometry (Use 'current_command' which is F/B/L/R/S)
             pose_x, pose_y, pose_theta = slam.odom.update(gz, dt, current_command)
 
-            # 4. Update Map with ToF
+            # 4. Update Map
             slam.map.update_with_tof(pose_x, pose_y, pose_theta, data.get("tof", []))
             
-            # 5. Build Output Manually
+            # 5. Build Output
             slam_out = {
                 "pose": {"x": pose_x, "y": pose_y, "theta": pose_theta},
                 "map": slam.map.grid
             }
-            # --- END HYBRID SLAM LOGIC ---
 
             now = time.time()
             if now - last_slam_publish_time < SLAM_PUBLISH_INTERVAL:
@@ -300,16 +294,13 @@ while True:
                 qos=1
             )
 
-            # --- START RED DOT DRAWING ---
+            # Red Dot Visualizer
             raw_map = slam_out["map"]
             display = np.zeros_like(raw_map, dtype=np.uint8)
-
             display[raw_map < 0] = 1   # Free
             display[raw_map > 0] = 100 # Wall
 
             try:
-                # Convert world pose to map coordinates
-                # Hardcoded 0.05 resolution matches your config
                 map_res = 0.05 
                 origin_x = raw_map.shape[1] // 2
                 origin_y = raw_map.shape[0] // 2
@@ -317,17 +308,14 @@ while True:
                 mx = int(pose_x / map_res) + origin_x
                 my = int(pose_y / map_res) + origin_y
 
-                # Draw a 3x3 Red Box (Value 200)
                 if(0 <= mx < raw_map.shape[1]) and (0 <= my < raw_map.shape[0]):
                     y_start = max(0, my - 1)
                     y_end   = min(raw_map.shape[0], my + 2)
                     x_start = max(0, mx - 1)
                     x_end   = min(raw_map.shape[1], mx + 2)
-                    
                     display[y_start:y_end, x_start:x_end] = 200
             except Exception as e:
-                print(f"[SLAM WARN] Could not draw robot on map: {e}")
-            # --- END RED DOT DRAWING ---
+                pass
 
             encoded = base64.b64encode(
                 zlib.compress(display.tobytes())
