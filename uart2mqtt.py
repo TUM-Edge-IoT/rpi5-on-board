@@ -28,16 +28,6 @@ MQTT_QOS = 1
 SLAM_PUBLISH_INTERVAL = float(os.getenv("SLAM_PUBLISH_INTERVAL", "1.0"))
 last_slam_publish_time = 0.0
 
-# Command Mapping (Frontend -> Python Internal)
-CMD_MAP = {
-    "forward": "F",
-    "backward": "B",
-    "left": "L",
-    "right": "R",
-    "stop": "S"
-}
-current_command = "S"
-
 # =============================================================================
 # HELPERS
 # =============================================================================
@@ -59,10 +49,11 @@ def publish_offline(reason=None):
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
     try:
+        # We capture the info object to wait for it later
         info = client.publish(f"robots/{ROBOT_ID}/status",
-                             json.dumps(payload),
-                             qos=1,
-                             retain=True)
+                        json.dumps(payload),
+                        qos=1,
+                        retain=True)
         return info
     except Exception:
         return None
@@ -87,6 +78,7 @@ client_id = f"{ROBOT_ID}"
 
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id, clean_session=True)
 
+# LWT (Last Will) - Backup in case of power failure/crash
 will_payload = json.dumps({
     "status": "offline",
     "ip_address": None,
@@ -127,9 +119,7 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
 
     print(f"[SYSTEM] ONLINE announced as {ROBOT_ID}")
 
-# --- FIXED: Send JSON to Robot, Keep "F" for SLAM ---
 def on_message(client, userdata, msg):
-    global current_command
     global ser
     if ser is None:
         print("[UART] Not ready, dropping command")
@@ -138,27 +128,11 @@ def on_message(client, userdata, msg):
     try:
         payload = msg.payload.decode("utf-8")
         
-        # 1. Parse JSON to find the command word (e.g., "forward")
-        try:
-            data = json.loads(payload)
-            if "command" in data:
-                raw_cmd = data["command"]
-            else:
-                raw_cmd = payload 
-        except json.JSONDecodeError:
-            raw_cmd = payload
-
-        # 2. Translate to Single Letter for PYTHON SLAM ONLY
-        clean_cmd = raw_cmd.strip().lower()
-        short_cmd = CMD_MAP.get(clean_cmd, "S") 
-        current_command = short_cmd # Update global variable for Odometry
-        
-        # 3. Send the ORIGINAL PAYLOAD to the ESP32 (Wheels)
-        # This ensures the firmware gets exactly what it expects (JSON)
+        # Pass the command directly to the ESP32 (Wheels)
+        # We don't need to parse it for SLAM anymore since we are using Accelerometer
         ser.write((payload + "\n").encode())
-        
-        print(f"[UART TX] Sent: {payload} | Internal: {short_cmd}")
-        
+        print(f"[UART TX] {payload}")
+            
     except Exception as e:
         print(f"[CMD ERROR] {e}")
 
@@ -174,7 +148,7 @@ except Exception as e:
     sys.exit(1)
 
 # =============================================================================
-# SERIAL
+# SERIAL (RETRY-BASED)
 # =============================================================================
 ser = None
 
@@ -203,20 +177,23 @@ def normalize_payload_for_db(payload):
     return out
 
 # =============================================================================
-# SHUTDOWN
+# GRACEFUL SHUTDOWN HANDLER (SIGTERM/SIGINT)
 # =============================================================================
 def graceful_shutdown(signum, frame):
     print(f"\n[SYSTEM] Caught signal {signum}. Shutting down gracefully...")
+    
     info = publish_offline("docker stop")
+    
     if info:
         info.wait_for_publish(timeout=2)
+        
     client.disconnect()
     client.loop_stop()
     print("[SYSTEM] Goodbye.")
     sys.exit(0)
 
-signal.signal(signal.SIGINT, graceful_shutdown)
-signal.signal(signal.SIGTERM, graceful_shutdown)
+signal.signal(signal.SIGINT, graceful_shutdown)  # Ctrl+C
+signal.signal(signal.SIGTERM, graceful_shutdown) # Docker stop
 
 # =============================================================================
 # MAIN LOOP
@@ -246,6 +223,7 @@ while True:
         
         if "timestamp_ms" in data:
             data["ts"] = data["timestamp_ms"]
+        # Encoders are ignored for position now, but we keep the parsing if needed later
         if "encoders" in data:
             data["enc"] = {"l": data["encoders"].get("e1",0),"r":data["encoders"].get("e2",0)}
         if "tof" in data and isinstance(data["tof"], dict):
@@ -259,7 +237,10 @@ while True:
         is_telem = "device" in data or "temperature" in data
 
         if is_slam and slam_enabled:
+            # --- START PHYSICS ENGINE (Accelerometer) ---
+            
             # 1. Manual Time Calculation
+            # We bypass slam.process() to feed Accelerometer data manually
             ts = data["ts"] / 1000.0
             if slam.last_ts is None:
                 slam.last_ts = ts
@@ -268,21 +249,27 @@ while True:
             dt = ts - slam.last_ts
             slam.last_ts = ts
 
-            # 2. Get Rotation from IMU
+            # 2. Extract IMU Physics Data
+            # 'gz' = Gyro Z (Rotation)
+            # 'ax' = Accel X (Forward/Back Acceleration)
             gz = data["imu"].get("gz", 0.0)
+            ax = data["imu"].get("ax", 0.0)
 
-            # 3. Update Odometry (Use 'current_command' which is F/B/L/R/S)
-            pose_x, pose_y, pose_theta = slam.odom.update(gz, dt, current_command)
+            # 3. Update Odometry using Pure Physics (No commands)
+            # Calls the new update(gyro_z, accel_x, dt) function
+            pose_x, pose_y, pose_theta = slam.odom.update(gz, ax, dt)
 
-            # 4. Update Map
+            # 4. Update Map with ToF
             slam.map.update_with_tof(pose_x, pose_y, pose_theta, data.get("tof", []))
             
-            # 5. Build Output
+            # 5. Build Output Manually
             slam_out = {
                 "pose": {"x": pose_x, "y": pose_y, "theta": pose_theta},
                 "map": slam.map.grid
             }
+            # --- END PHYSICS ENGINE ---
 
+            # Rate Limiter
             now = time.time()
             if now - last_slam_publish_time < SLAM_PUBLISH_INTERVAL:
                 continue
@@ -294,28 +281,32 @@ while True:
                 qos=1
             )
 
-            # Red Dot Visualizer
+            # --- RED DOT VISUALIZATION ---
             raw_map = slam_out["map"]
             display = np.zeros_like(raw_map, dtype=np.uint8)
-            display[raw_map < 0] = 1   # Free
-            display[raw_map > 0] = 100 # Wall
+
+            display[raw_map < 0] = 1   # Free space
+            display[raw_map > 0] = 100 # Walls
 
             try:
-                map_res = 0.05 
+                # Convert world pose to map coordinates
+                map_res = 0.05
                 origin_x = raw_map.shape[1] // 2
                 origin_y = raw_map.shape[0] // 2
 
                 mx = int(pose_x / map_res) + origin_x
                 my = int(pose_y / map_res) + origin_y
 
+                # Draw a 3x3 Red Box (Value 200)
                 if(0 <= mx < raw_map.shape[1]) and (0 <= my < raw_map.shape[0]):
                     y_start = max(0, my - 1)
                     y_end   = min(raw_map.shape[0], my + 2)
                     x_start = max(0, mx - 1)
                     x_end   = min(raw_map.shape[1], mx + 2)
+                    
                     display[y_start:y_end, x_start:x_end] = 200
             except Exception as e:
-                pass
+                print(f"[SLAM WARN] Could not draw robot on map: {e}")
 
             encoded = base64.b64encode(
                 zlib.compress(display.tobytes())
