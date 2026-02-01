@@ -51,9 +51,9 @@ def publish_offline(reason=None):
     try:
         # We capture the info object to wait for it later
         info = client.publish(f"robots/{ROBOT_ID}/status",
-                        json.dumps(payload),
-                        qos=1,
-                        retain=True)
+                       json.dumps(payload),
+                       qos=1,
+                       retain=True)
         return info
     except Exception:
         return None
@@ -127,12 +127,10 @@ def on_message(client, userdata, msg):
 
     try:
         payload = msg.payload.decode("utf-8")
-        
-        # Pass the command directly to the ESP32 (Wheels)
-        # We don't need to parse it for SLAM anymore since we are using Accelerometer
-        ser.write((payload + "\n").encode())
-        print(f"[UART TX] {payload}")
-            
+        data = json.loads(payload)
+        if "command" in data:
+            ser.write((payload + "\n").encode())
+            print(f"[UART TX] {payload}")
     except Exception as e:
         print(f"[CMD ERROR] {e}")
 
@@ -220,10 +218,8 @@ while True:
             data = json.loads(text)
         except json.JSONDecodeError:
             continue
-        
         if "timestamp_ms" in data:
             data["ts"] = data["timestamp_ms"]
-        # Encoders are ignored for position now, but we keep the parsing if needed later
         if "encoders" in data:
             data["enc"] = {"l": data["encoders"].get("e1",0),"r":data["encoders"].get("e2",0)}
         if "tof" in data and isinstance(data["tof"], dict):
@@ -237,39 +233,10 @@ while True:
         is_telem = "device" in data or "temperature" in data
 
         if is_slam and slam_enabled:
-            # --- START PHYSICS ENGINE (Accelerometer) ---
-            
-            # 1. Manual Time Calculation
-            # We bypass slam.process() to feed Accelerometer data manually
-            ts = data["ts"] / 1000.0
-            if slam.last_ts is None:
-                slam.last_ts = ts
-                continue 
-            
-            dt = ts - slam.last_ts
-            slam.last_ts = ts
+            slam_out = slam.process(data)
+            if not slam_out:
+                continue
 
-            # 2. Extract IMU Physics Data
-            # 'gz' = Gyro Z (Rotation)
-            # 'ax' = Accel X (Forward/Back Acceleration)
-            gz = data["imu"].get("gz", 0.0)
-            ax = data["imu"].get("ax", 0.0)
-
-            # 3. Update Odometry using Pure Physics (No commands)
-            # Calls the new update(gyro_z, accel_x, dt) function
-            pose_x, pose_y, pose_theta = slam.odom.update(gz, ax, dt)
-
-            # 4. Update Map with ToF
-            slam.map.update_with_tof(pose_x, pose_y, pose_theta, data.get("tof", []))
-            
-            # 5. Build Output Manually
-            slam_out = {
-                "pose": {"x": pose_x, "y": pose_y, "theta": pose_theta},
-                "map": slam.map.grid
-            }
-            # --- END PHYSICS ENGINE ---
-
-            # Rate Limiter
             now = time.time()
             if now - last_slam_publish_time < SLAM_PUBLISH_INTERVAL:
                 continue
@@ -281,23 +248,23 @@ while True:
                 qos=1
             )
 
-            # --- RED DOT VISUALIZATION ---
             raw_map = slam_out["map"]
             display = np.zeros_like(raw_map, dtype=np.uint8)
 
-            display[raw_map < 0] = 1   # Free space
-            display[raw_map > 0] = 100 # Walls
+            display[raw_map < 0] = 1
+            display[raw_map > 0] = 100
 
             try:
-                # Convert world pose to map coordinates
+                pose_x =slam_out["pose"]["x"] 
+                pose_y =slam_out["pose"]["y"]
+
                 map_res = 0.05
                 origin_x = raw_map.shape[1] // 2
                 origin_y = raw_map.shape[0] // 2
 
-                mx = int(pose_x / map_res) + origin_x
-                my = int(pose_y / map_res) + origin_y
+                mx = int (pose_x / map_res) + origin_x
+                my = int (pose_y / map_res) + origin_y
 
-                # Draw a 3x3 Red Box (Value 200)
                 if(0 <= mx < raw_map.shape[1]) and (0 <= my < raw_map.shape[0]):
                     y_start = max(0, my - 1)
                     y_end   = min(raw_map.shape[0], my + 2)
@@ -307,6 +274,7 @@ while True:
                     display[y_start:y_end, x_start:x_end] = 200
             except Exception as e:
                 print(f"[SLAM WARN] Could not draw robot on map: {e}")
+
 
             encoded = base64.b64encode(
                 zlib.compress(display.tobytes())

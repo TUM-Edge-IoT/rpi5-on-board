@@ -7,54 +7,40 @@ class Odometry:
         self.y = 0.0
         self.theta = 0.0
         
-        # Physics State
-        self.vx = 0.0 # Velocity X (World Frame)
-        self.vy = 0.0 # Velocity Y (World Frame)
+        # Add variables to store the previous tick counts
+        self.last_ticks_l = None
+        self.last_ticks_r = None
 
-    def update(self, gyro_z, accel_x, dt):
-        """
-        Calculate position using Double Integration of Acceleration.
-        accel_x: Forward acceleration in m/s^2
-        gyro_z:  Rotation speed in rad/s
-        dt:      Time since last update in seconds
-        """
-        
-        # 1. Update Heading (Gyro is reliable)
-        self.theta += gyro_z * dt
-        # Normalize theta (-pi to pi)
-        self.theta = math.atan2(math.sin(self.theta), math.cos(self.theta))
+    def update(self, ticks_l, ticks_r, gyro_z, dt):
+        # 1. If this is the first time receiving data, treat it as our "0" (baseline)
+        if self.last_ticks_l is None:
+            self.last_ticks_l = ticks_l
+            self.last_ticks_r = ticks_r
+            return self.x, self.y, self.theta
 
-        # 2. Filter Accelerometer Noise (The "Dead Zone")
-        # If acceleration is tiny, treat it as 0 to stop drift
-        if abs(accel_x) < ACCEL_THRESHOLD:
-            ax = 0.0
-        else:
-            ax = accel_x
+        # 2. Calculate the CHANGE (delta) in ticks
+        delta_ticks_l = ticks_l - self.last_ticks_l
+        delta_ticks_r = ticks_r - self.last_ticks_r
 
-        # 3. Calculate World Acceleration Vectors
-        # We assume the robot only accelerates 'forward' relative to itself
-        # Ax_world = ax_robot * cos(theta)
-        # Ay_world = ax_robot * sin(theta)
-        world_ax = ax * math.cos(self.theta)
-        world_ay = ax * math.sin(self.theta)
+        # 3. Update the stored values for the next loop
+        self.last_ticks_l = ticks_l
+        self.last_ticks_r = ticks_r
 
-        # 4. Update Velocity (Integration 1: a -> v)
-        self.vx += world_ax * dt
-        self.vy += world_ay * dt
+        # 4. Calculate physical distance using the DELTAS, not the raw values
+        meters_per_tick = (2 * math.pi * WHEEL_RADIUS) / TICKS_PER_REV
 
-        # 5. Apply "Virtual Friction"
-        # If the robot is not accelerating, we must dampen velocity 
-        # otherwise it will glide on the map forever like it's on ice.
-        if ax == 0.0:
-            self.vx *= VELOCITY_DECAY
-            self.vy *= VELOCITY_DECAY
-            
-            # Snap to 0 if very slow
-            if abs(self.vx) < 0.01: self.vx = 0
-            if abs(self.vy) < 0.01: self.vy = 0
+        dl = delta_ticks_l * meters_per_tick
+        dr = delta_ticks_r * meters_per_tick
 
-        # 6. Update Position (Integration 2: v -> x)
-        self.x += self.vx * dt
-        self.y += self.vy * dt
+        ds = (dl + dr) / 2.0
+        dtheta_enc = (dr - dl) / WHEEL_BASE
+        dtheta_imu = gyro_z * dt
+
+        # Complementary filter
+        dtheta = 0.98 * dtheta_imu + 0.02 * dtheta_enc
+
+        self.theta += dtheta
+        self.x += ds * math.cos(self.theta)
+        self.y += ds * math.sin(self.theta)
 
         return self.x, self.y, self.theta
