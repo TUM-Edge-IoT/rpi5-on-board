@@ -280,10 +280,10 @@ while True:
                 mx = int(pose_x / map_res) + origin_x
                 my = int(pose_y / map_res) + origin_y
 
-                # Robot dimensions: 153mm wide × 320mm long
-                # In cells: 3 cells wide × 7 cells long (at 5cm/cell)
-                ROBOT_HALF_WIDTH = 2   # ~15cm total width (3 cells, so ±1.5 rounded to ±2)
-                ROBOT_HALF_LENGTH = 3  # ~32cm total length (7 cells, so ±3.5 rounded to ±3)
+                # Robot dimensions: 320mm wide × 153mm long
+                # In cells: 6 cells wide × 3 cells long (at 5cm/cell)
+                ROBOT_HALF_WIDTH = 3   # ~32cm total width (6 cells, so ±3)
+                ROBOT_HALF_LENGTH = 2  # ~15cm total length (3 cells, so ±1.5 rounded to ±2)
 
                 # Draw robot as oriented rectangle based on heading
                 # For simplicity, we draw cells that fall within the robot's footprint
