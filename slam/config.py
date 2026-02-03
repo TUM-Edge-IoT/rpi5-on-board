@@ -26,11 +26,13 @@ ENCODER_WRAP_THRESHOLD = 180  # If delta > 180, it's a wraparound
 #   - Outer right: +49.5°
 #
 # Physical positions on bracket (12.5mm from edge, 30mm between pairs)
+# NOTE: In standard math convention, positive angles = counter-clockwise = LEFT
+#       So left sensors get POSITIVE angles, right sensors get NEGATIVE angles
 TOF_ANGLES = [
-    math.radians(-49.5),   # d1: Outer left sensor
-    math.radians(-16.5),   # d2: Inner left sensor
-    math.radians(16.5),    # d3: Inner right sensor
-    math.radians(49.5),    # d4: Outer right sensor
+    math.radians(49.5),    # d1: Outer left sensor (counter-clockwise from front)
+    math.radians(16.5),    # d2: Inner left sensor
+    math.radians(-16.5),   # d3: Inner right sensor
+    math.radians(-49.5),   # d4: Outer right sensor (clockwise from front)
 ]
 
 # ToF sensor mount offset from robot center (meters)
