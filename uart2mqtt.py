@@ -120,7 +120,7 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
     print(f"[SYSTEM] ONLINE announced as {ROBOT_ID}")
 
 def on_message(client, userdata, msg):
-    global ser
+    global ser, slam
     if ser is None:
         print("[UART] Not ready, dropping command")
         return
@@ -129,6 +129,19 @@ def on_message(client, userdata, msg):
         payload = msg.payload.decode("utf-8")
         data = json.loads(payload)
         if "command" in data:
+            cmd = data["command"]
+            
+            # Update SLAM engine's turning state based on command
+            # "left" or "right" = turning in place, encoder values are meaningless
+            # "forward", "backward", "stop" = not turning, encoder is valid
+            if slam_enabled and slam is not None:
+                if cmd in ("left", "right"):
+                    slam.set_turning(True)
+                    print(f"[SLAM] Turn mode: ON (command={cmd})")
+                else:
+                    slam.set_turning(False)
+                    print(f"[SLAM] Turn mode: OFF (command={cmd})")
+            
             ser.write((payload + "\n").encode())
             print(f"[UART TX] {payload}")
     except Exception as e:
@@ -221,7 +234,7 @@ while True:
         if "timestamp_ms" in data:
             data["ts"] = data["timestamp_ms"]
         if "encoders" in data:
-            data["enc"] = {"l": data["encoders"].get("e1",0),"r":data["encoders"].get("e2",0)}
+            data["enc"] = data["encoders"].get("e1", 0)
         if "tof" in data and isinstance(data["tof"], dict):
             for k, v in data["tof"].items():
                 try:
@@ -255,23 +268,41 @@ while True:
             display[raw_map > 0] = 100
 
             try:
-                pose_x =slam_out["pose"]["x"] 
-                pose_y =slam_out["pose"]["y"]
+                pose_x = slam_out["pose"]["x"] 
+                pose_y = slam_out["pose"]["y"]
+                pose_theta = slam_out["pose"]["theta"]
 
                 map_res = 0.05
                 origin_x = raw_map.shape[1] // 2
                 origin_y = raw_map.shape[0] // 2
 
-                mx = int (pose_x / map_res) + origin_x
-                my = int (pose_y / map_res) + origin_y
+                # Robot center in map coordinates
+                mx = int(pose_x / map_res) + origin_x
+                my = int(pose_y / map_res) + origin_y
 
-                if(0 <= mx < raw_map.shape[1]) and (0 <= my < raw_map.shape[0]):
-                    y_start = max(0, my - 1)
-                    y_end   = min(raw_map.shape[0], my + 2)
-                    x_start = max(0, mx - 1)
-                    x_end   = min(raw_map.shape[1], mx + 2)
-                    
-                    display[y_start:y_end, x_start:x_end] = 200
+                # Robot dimensions: 153mm wide × 320mm long
+                # In cells: 3 cells wide × 7 cells long (at 5cm/cell)
+                ROBOT_HALF_WIDTH = 2   # ~15cm total width (3 cells, so ±1.5 rounded to ±2)
+                ROBOT_HALF_LENGTH = 3  # ~32cm total length (7 cells, so ±3.5 rounded to ±3)
+
+                # Draw robot as oriented rectangle based on heading
+                # For simplicity, we draw cells that fall within the robot's footprint
+                import math
+                cos_t = math.cos(pose_theta)
+                sin_t = math.sin(pose_theta)
+
+                # Check each cell in a bounding box around the robot
+                for dy in range(-ROBOT_HALF_LENGTH - 1, ROBOT_HALF_LENGTH + 2):
+                    for dx in range(-ROBOT_HALF_WIDTH - 1, ROBOT_HALF_WIDTH + 2):
+                        # Rotate the offset by robot heading
+                        # dx is perpendicular to heading (width), dy is along heading (length)
+                        rx = int(mx + dx * cos_t - dy * sin_t)
+                        ry = int(my + dx * sin_t + dy * cos_t)
+                        
+                        # Check if this rotated point is within robot bounds
+                        if abs(dx) <= ROBOT_HALF_WIDTH and abs(dy) <= ROBOT_HALF_LENGTH:
+                            if 0 <= rx < raw_map.shape[1] and 0 <= ry < raw_map.shape[0]:
+                                display[ry, rx] = 200
             except Exception as e:
                 print(f"[SLAM WARN] Could not draw robot on map: {e}")
 
