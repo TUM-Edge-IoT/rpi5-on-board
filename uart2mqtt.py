@@ -282,8 +282,8 @@ while True:
 
                 # Robot dimensions: 320mm wide × 153mm long
                 # In cells: 6 cells wide × 3 cells long (at 5cm/cell)
-                ROBOT_HALF_WIDTH = 3   # ~32cm total width (6 cells, so ±3)
-                ROBOT_HALF_LENGTH = 2  # ~15cm total length (3 cells, so ±1.5 rounded to ±2)
+                ROBOT_HALF_WIDTH = 2  
+                ROBOT_HALF_LENGTH = 3  
 
                 # Draw robot as oriented rectangle based on heading
                 # For simplicity, we draw cells that fall within the robot's footprint
