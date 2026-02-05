@@ -262,10 +262,18 @@ while True:
             )
 
             raw_map = slam_out["map"]
+            
+            # Flip the map vertically for correct visualization
+            # In SLAM, Y increases upward, but in image coordinates Y increases downward
+            raw_map = np.flipud(raw_map)
+            
             display = np.zeros_like(raw_map, dtype=np.uint8)
 
-            display[raw_map < 0] = 1
-            display[raw_map > 0] = 100
+            # Use thresholds to filter noise:
+            # - Free space: value < -5 (seen free multiple times)
+            # - Occupied: value > 10 (seen as wall multiple times, filters noise)
+            display[raw_map < -5] = 1      # Free space (light)
+            display[raw_map > 10] = 100    # Wall (dark) - requires higher confidence
 
             try:
                 pose_x = slam_out["pose"]["x"] 
@@ -277,8 +285,10 @@ while True:
                 origin_y = raw_map.shape[0] // 2
 
                 # Robot center in map coordinates
+                # The map is already flipped (Y increases downward in image),
+                # so we subtract pose_y to get correct position
                 mx = int(pose_x / map_res) + origin_x
-                my = int(pose_y / map_res) + origin_y
+                my = origin_y - int(pose_y / map_res)
 
                 # Robot dimensions: 320mm wide × 153mm long
                 # In cells: 6 cells wide × 3 cells long (at 5cm/cell)
@@ -286,10 +296,10 @@ while True:
                 ROBOT_HALF_LENGTH = 3  
 
                 # Draw robot as oriented rectangle based on heading
-                # For simplicity, we draw cells that fall within the robot's footprint
+                # Negate theta because we flipped the Y-axis
                 import math
-                cos_t = math.cos(pose_theta)
-                sin_t = math.sin(pose_theta)
+                cos_t = math.cos(-pose_theta)
+                sin_t = math.sin(-pose_theta)
 
                 # Check each cell in a bounding box around the robot
                 for dy in range(-ROBOT_HALF_LENGTH - 1, ROBOT_HALF_LENGTH + 2):

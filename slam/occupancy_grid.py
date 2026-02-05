@@ -92,7 +92,7 @@ class OccupancyGrid:
             world_angle = theta + sensor_angle
             
             # Determine if we hit an obstacle or reached max range
-            if dist_mm > 0 and dist_mm < TOF_MAX_RANGE * 1000:
+            if dist_mm > 0 and dist_mm < TOF_MAX_RANGE * 2000:
                 # Obstacle detected at this distance
                 # Add mount offset since sensor is 35mm in front of robot center
                 dist = (dist_mm / 1000.0) + TOF_MOUNT_OFFSET
@@ -116,12 +116,15 @@ class OccupancyGrid:
             ray_cells = self.bresenham_line(rx, ry, mx, my)
 
             # Mark all cells along the ray as FREE
+            # Use stronger decrement to balance with occupied increment
             for cx, cy in ray_cells[:-1] if hit_obstacle else ray_cells:
                 if 0 <= cx < self.size and 0 <= cy < self.size:
                     # Decrement towards free (min at -100)
-                    self.grid[cy, cx] = max(self.grid[cy, cx] - 1, -100)
+                    # Use -3 to balance: a few free observations can clear a wall
+                    self.grid[cy, cx] = max(self.grid[cy, cx] - 3, -100)
 
             # Mark the endpoint as OCCUPIED only if we hit an obstacle
             if hit_obstacle and 0 <= mx < self.size and 0 <= my < self.size:
                 # Increment towards occupied (max at 100)
-                self.grid[my, mx] = min(self.grid[my, mx] + 10, 100)
+                # Use +5 for walls - requires ~2 free observations to clear
+                self.grid[my, mx] = min(self.grid[my, mx] + 5, 100)
