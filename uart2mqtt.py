@@ -264,11 +264,8 @@ while True:
             raw_map = slam_out["map"]
             display = np.zeros_like(raw_map, dtype=np.uint8)
 
-            # Use thresholds to filter noise:
-            # - Free space: value < -5 (seen free multiple times)
-            # - Occupied: value > 10 (seen as wall multiple times, filters noise)
-            display[raw_map < -5] = 1      # Free space (light)
-            display[raw_map > 10] = 100    # Wall (dark) - requires higher confidence
+            display[raw_map < 0] = 1
+            display[raw_map > 0] = 100
 
             try:
                 pose_x = slam_out["pose"]["x"] 
@@ -289,6 +286,7 @@ while True:
                 ROBOT_HALF_LENGTH = 3  
 
                 # Draw robot as oriented rectangle based on heading
+                # For simplicity, we draw cells that fall within the robot's footprint
                 import math
                 cos_t = math.cos(pose_theta)
                 sin_t = math.sin(pose_theta)
