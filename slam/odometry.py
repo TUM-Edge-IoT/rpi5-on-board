@@ -32,8 +32,8 @@ class Odometry:
     def __init__(self):
         # Robot pose in world coordinates
         self.x = 0.0      # meters, positive = right
-        self.y = 0.0      # meters, positive = up  
-        self.theta = math.pi / 2  # radians, start facing up (positive Y)
+        self.y = 0.0      # meters, positive = down (image coordinates)  
+        self.theta = 0.0  # radians, start facing up (negative Y in image = up on screen)
         
         # Previous encoder reading for delta calculation
         self.last_angle = None
