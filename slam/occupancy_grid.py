@@ -92,7 +92,7 @@ class OccupancyGrid:
             world_angle = theta + sensor_angle
             
             # Determine if we hit an obstacle or reached max range
-            if dist_mm > 0:
+            if dist_mm > 0 and dist_mm < TOF_MAX_RANGE * 1000:
                 # Obstacle detected at this distance
                 # Add mount offset since sensor is 35mm in front of robot center
                 dist = (dist_mm / 1000.0) + TOF_MOUNT_OFFSET
