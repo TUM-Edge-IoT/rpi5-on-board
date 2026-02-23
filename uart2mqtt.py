@@ -12,11 +12,17 @@ import zlib
 import numpy as np
 import signal 
 
+
 # =============================================================================
 # CONFIG
 # =============================================================================
-#BROKER_IP   = os.getenv("MQTT_BROKER", "10.110.117.139") 
 BROKER_IP   = os.getenv("MQTT_BROKER", "172.20.10.3")
+
+
+# This should be the IP for the backend/cloudapp
+#BROKER_IP = os.getenv("MQTT_BROKER", "10.213.231.230")
+
+
 BROKER_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
 UART_DEVICE = os.getenv("UART_DEVICE", "/dev/ttyAMA0")
